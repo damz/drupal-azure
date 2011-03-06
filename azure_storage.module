@@ -26,7 +26,7 @@ function azure_storage_menu() {
   $items['azure/generate/%image_style'] = array(
     'title' => 'Generate image style',
     'page callback' => 'azure_storage_image_style_deliver',
-    'page arguments' => array(count(explode('/', $directory_path)) + 1),
+    'page arguments' => array(2),
     'access callback' => TRUE,
     'type' => MENU_CALLBACK,
   );
