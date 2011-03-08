@@ -1,0 +1,9 @@
+name = Azure Storage
+description = Handles storage of files on Azure Blob Storage.
+core = 7.x
+
+; Stream wrapper implementation.
+files[] = azure_storage.streamwrappers.inc
+
+; Tests.
+files[] = tests/azure_storage.lowlevel.test
