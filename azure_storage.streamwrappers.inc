@@ -124,7 +124,7 @@ class DrupalAzureStorageStreamWrapper extends Microsoft_WindowsAzure_Storage_Blo
     $defaults = array(
       'dev' => 0,
       'ino' => 0,
-      'mode' => 0664,
+      'mode' => 0666,
       'nlink' => 0,
       'uid' => 0,
       'gid' => 0,
@@ -139,7 +139,7 @@ class DrupalAzureStorageStreamWrapper extends Microsoft_WindowsAzure_Storage_Blo
 
     if ($target === '' || isset($this->_known_dirs[$target])) {
       // It is a directory.
-      $defaults['mode'] |= 040111;
+      $defaults['mode'] |= 040777;
       return array_values($defaults) + $defaults;
     }
     else {
@@ -153,7 +153,7 @@ class DrupalAzureStorageStreamWrapper extends Microsoft_WindowsAzure_Storage_Blo
         // Hm. There is no blob by that name, maybe it is a directory?
         if ($this->isDirectory($uri)) {
           // It is a directory.
-          $defaults['mode'] |= 0040755;
+          $defaults['mode'] |= 0040777;
           return array_values($defaults) + $defaults;
         }
         else {
