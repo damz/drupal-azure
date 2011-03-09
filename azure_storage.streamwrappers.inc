@@ -76,7 +76,25 @@ class DrupalAzureStorageStreamWrapper extends Microsoft_WindowsAzure_Storage_Blo
    * Extract file name.
    */
   protected function _getFileName($path) {
-    return file_uri_target($path);
+    return $this->getTarget($path);
+  }
+
+  public function stream_open($path, $mode, $options, &$opened_path) {
+    try {
+      $result = parent::stream_open($path, $mode, $options, $opened_path);
+      // If we opened the file successfully, and we are in write mode,
+      // ensure that the parent directory exists.
+      if ($result && $this->_writeMode) {
+        if (!$this->isDirectory($this->dirname($path))) {
+          return FALSE;
+        }
+      }
+      return $result;
+    }
+    catch (Exception $e) {
+      // The stream_open() function should not raise any exception.
+      return FALSE;
+    }
   }
 
   public function stream_close() {
@@ -88,14 +106,25 @@ class DrupalAzureStorageStreamWrapper extends Microsoft_WindowsAzure_Storage_Blo
     ));
   }
 
+  public function unlink($path) {
+    // unlink() should never throw an exception.
+    // TODO: contribute that to the PHP Azure SDK.
+    try {
+      return parent::unlink($path);
+    }
+    catch (Exception $e) {
+      return FALSE;
+    }
+  }
+
   public function url_stat($uri, $flags) {
-    $target = file_uri_target($uri);
+    $target = $this->getTarget($uri);
 
     // Sane default values.
     $defaults = array(
       'dev' => 0,
       'ino' => 0,
-      'mode' => 0644,
+      'mode' => 0664,
       'nlink' => 0,
       'uid' => 0,
       'gid' => 0,
@@ -110,55 +139,99 @@ class DrupalAzureStorageStreamWrapper extends Microsoft_WindowsAzure_Storage_Blo
 
     if ($target === '' || isset($this->_known_dirs[$target])) {
       // It is a directory.
-      $defaults['mode'] |= 040755;
+      $defaults['mode'] |= 040111;
       return array_values($defaults) + $defaults;
     }
     else {
       $stat = parent::url_stat($uri, $flags);
       if ($stat !== FALSE) {
+        // Set the group access.
+        $stat['mode'] |= 660;
         return array_values($stat) + $stat;
       }
       else {
         // Hm. There is no blob by that name, maybe it is a directory?
-        $child_blobs = $this->_getStorageClient($uri)->listBlobs($this->_getContainerName($uri), $target . '/', '/', 1);
-        if ($child_blobs) {
+        if ($this->isDirectory($uri)) {
           // It is a directory.
-          $defaults['mode'] |= 0140755;
+          $defaults['mode'] |= 0040755;
           return array_values($defaults) + $defaults;
         }
         else {
-          // Really not a file.
+          // File really doesn't exist.
           return false;
         }
       }
     }
   }
 
+  public function isDirectory($uri) {
+    $target = $this->_getFileName($uri);
+    if ($target === '') {
+      return TRUE;
+    }
+
+    try {
+      // First check if our directory placeholder exists.
+      $info = $this->_getStorageClient($uri)->getBlobInstance(
+        $this->_getContainerName($uri),
+        $target . '/.placeholder'
+      );
+      return TRUE;
+    }
+    catch (Microsoft_WindowsAzure_Exception $ex) {
+      // Unexisting file... continue.
+    }
+
+    // If not, check if the we have child objects.
+    $target = $this->getTarget($uri);
+    $child_blobs = $this->_getStorageClient($uri)->listBlobs($this->_getContainerName($uri), $target . '/', '/', 1);
+    if ($child_blobs) {
+      // Create the placeholder.
+      $this->_getStorageClient($uri)->putBlobData(
+        $this->_getContainerName($uri),
+        rtrim($this->_getFileName($uri), '/') . '/.placeholder',
+        ''
+      );
+      return TRUE;
+    }
+    else {
+      return FALSE;
+    }
+  }
+
   public function mkdir($uri, $mode, $options) {
-    // Ignore all mkdir requests. They are useless on Azure.
+    // Create the placeholder.
+    $this->_getStorageClient($uri)->putBlobData(
+      $this->_getContainerName($uri),
+      $this->_getFileName($uri) . '/.placeholder',
+      ''
+    );
     return TRUE;
   }
 
   public function rmdir($uri, $options) {
-    // Just check if the "directory" is not empty.
-    $target = file_uri_target($uri);
+    $target = $this->getTarget($uri);
 
+    // Check if the "directory" is not empty, it is not empty if it contains
+    // at least 2 objects, the placeholder object and one other.
     $child_blobs = $this->_getStorageClient($uri)->listBlobs(
       $this->_getContainerName($uri),
       $target !== '' ? $target . '/' : '',
       '/',
-      1
+      2
     );
-    if ($child_blobs) {
+    if (count($child_blobs) > 1) {
+      // The directory is not empty, cannot remove it.
       return FALSE;
     }
     else {
+      $this->unlink(rtrim($uri, '/') . '/.placeholder');
       return TRUE;
     }
   }
 
   public function dir_opendir($uri, $options) {
-    $target = file_uri_target($uri);
+    $target = $this->getTarget($uri);
     $blobs = $this->_getStorageClient($uri)->listBlobs(
       $this->_getContainerName($uri),
       $target !== '' ? $target . '/' : '',
@@ -217,7 +290,7 @@ class DrupalAzureStorageStreamWrapper extends Microsoft_WindowsAzure_Storage_Blo
 
   public function getExternalUrl() {
     // If the file is a styles derivative, treat it differently.
-    $target = file_uri_target($this->_fileName);
+    $target = $this->getTarget($this->_fileName);
     $parts = explode('/', $target);
     $first_part = array_shift($parts);
     if ($first_part == 'styles') {
@@ -246,10 +319,24 @@ class DrupalAzureStorageStreamWrapper extends Microsoft_WindowsAzure_Storage_Blo
     return FALSE;
   }
 
-  public function dirname($uri = NULL) {
+  protected function getTarget($uri = NULL) {
+    if (!isset($uri)) {
+      $uri = $this->uri;
+    }
+
     list($scheme, $target) = explode('://', $uri, 2);
-    $target  = file_uri_target($uri);
-    $dirname = dirname($target);
+
+    // Remove erroneous leading or trailing, forward-slashes and backslashes.
+    return trim($target, '\/');
+  }
+
+  public function dirname($uri = NULL) {
+    if (!isset($uri)) {
+      $uri = $this->uri;
+    }
+
+    list($scheme, $target) = explode('://', $uri, 2);
+    $dirname = dirname(trim($target, '\/'));
 
     if ($dirname == '.') {
       $dirname = '';
